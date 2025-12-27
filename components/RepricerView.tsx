@@ -5,7 +5,7 @@ import { RepricerRule, Product } from '../types';
 import { 
   Zap, TrendingDown, DollarSign, Moon, ArrowLeft, Save, Search, 
   BarChart3, Settings2, CheckSquare, Square, Clock, ArrowDownWideNarrow, AlertCircle, CheckCircle2,
-  Swords
+  Swords, Shield, Plus, Target, Flame, Rocket, Pencil
 } from 'lucide-react';
 
 // --- Types for Simulation ---
@@ -37,13 +37,37 @@ const getColor = (type: string) => {
 };
 
 export const RepricerView: React.FC = () => {
+  // --- View State ---
+  const [viewMode, setViewMode] = useState<'LIST' | 'DETAIL' | 'SETTINGS' | 'CREATE'>('LIST');
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
+  
+  // --- Editing State ---
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [tempName, setTempName] = useState('');
+  
+  // --- Data State ---
+  const [rules, setRules] = useState<RepricerRule[]>(REPRICER_RULES);
   const [ruleAssignments, setRuleAssignments] = useState<Record<string, Set<string>>>({
     '1': new Set(['1', '3']), 
   });
   const [searchQuery, setSearchQuery] = useState('');
 
-  // --- Dynamic Configuration State ---
+  // --- Global Settings State ---
+  const [globalSettings, setGlobalSettings] = useState({
+      minProfitMargin: 15,
+      maxDailyDrop: 5,
+      ignoreNewSellers: true,
+      matchAmazon: false
+  });
+
+  // --- Create Strategy Form State ---
+  const [newStrategy, setNewStrategy] = useState({
+      name: '',
+      type: 'PROFIT' as 'PROFIT' | 'VELOCITY' | 'LIQUIDATION',
+      description: ''
+  });
+
+  // --- Dynamic Configuration State (Detail View) ---
   // "When" Condition
   const [salesThreshold, setSalesThreshold] = useState(5);
   const [periodDays, setPeriodDays] = useState(7);
@@ -54,9 +78,20 @@ export const RepricerView: React.FC = () => {
   const [fixedDrop, setFixedDrop] = useState(0.50);
   const [fixedLimit, setFixedLimit] = useState(5.00);
 
+  // Derived Active Rule
   const activeRule = useMemo(() => 
-    REPRICER_RULES.find(r => r.id === selectedRuleId), 
-  [selectedRuleId]);
+    rules.find(r => r.id === selectedRuleId), 
+  [rules, selectedRuleId]);
+
+  // Sync View Mode with Selection and Reset Edit State
+  useEffect(() => {
+    if (selectedRuleId) {
+        setViewMode('DETAIL');
+        setIsEditingName(false);
+    } else if (viewMode === 'DETAIL') {
+        setViewMode('LIST');
+    }
+  }, [selectedRuleId]);
 
   const assignedProductIds = useMemo(() => 
     ruleAssignments[selectedRuleId || ''] || new Set(), 
@@ -80,7 +115,6 @@ export const RepricerView: React.FC = () => {
     // Simulation Loop (24h)
     for (let i = 0; i < totalSteps; i++) {
         // 1. Simulate Competitor Moves (Random Walk + Market Trends)
-        // Competitors react to time of day and random noise
         const marketNoise = (Math.random() - 0.5) * 2; 
         const marketTrend = Math.sin(i / 6) * 3; 
         competitorPrice = 100.50 + marketTrend + marketNoise;
@@ -90,43 +124,43 @@ export const RepricerView: React.FC = () => {
         
         let targetPrice = myPrice;
              
-        // Logic: If we are losing buy box (myPrice >= competitorPrice), trigger the drop rule
+        // Logic: If we are losing buy box, trigger the drop rule
         if (myPrice >= competitorPrice * 0.99) {
             targetPrice = myPrice * (1 - dropFactor) - fixedDrop;
         } else {
-            // If we are winning significantly, maybe creep up (Profit strategy) or hold
+            // Strategy behavior
             if (activeRule?.type === 'PROFIT') {
                 targetPrice = myPrice * 1.01; 
             } else if (activeRule?.type === 'VELOCITY') {
-                // Velocity keeps price competitive but stable if winning
                 targetPrice = Math.min(myPrice, competitorPrice - 0.10);
             }
         }
 
-        // Apply Limits (Floor Calculation)
-        // The floor is calculated from the base price (100) minus the limits set by user
+        // Apply Limits & Global Guardrails
         const maxPercentDrop = 100 * (percentLimit / 100);
         const maxFixedDrop = fixedLimit;
-        const floorPrice = 100 - maxPercentDrop - maxFixedDrop;
+        // Global Setting: Min Margin Floor
+        const globalMinMarginPrice = costBasis * (1 + (globalSettings.minProfitMargin / 100));
         
-        // Ensure price doesn't go below floor or cost basis (safety)
-        myPrice = Math.max(Math.max(floorPrice, costBasis * 1.05), targetPrice);
+        const floorPrice = Math.max(100 - maxPercentDrop - maxFixedDrop, globalMinMarginPrice);
+        
+        // Ensure price doesn't go below floor
+        myPrice = Math.max(floorPrice, targetPrice);
 
 
         // 3. Calculate Win Probability for this step
-        // Win rate is a sigmoid function of price difference
         const priceDiffPercent = (competitorPrice - myPrice) / competitorPrice;
         let stepWinChance = 0;
         
-        if (priceDiffPercent > 0.03) stepWinChance = 95; // 3% cheaper -> Dominate Buy Box
-        else if (priceDiffPercent > 0) stepWinChance = 60 + (priceDiffPercent * 1000); // Slightly cheaper -> Fight for Buy Box
-        else if (priceDiffPercent > -0.02) stepWinChance = 20; // Slightly more expensive -> Rotational win
-        else stepWinChance = 0; // Way more expensive -> No sales
+        if (priceDiffPercent > 0.03) stepWinChance = 95; 
+        else if (priceDiffPercent > 0) stepWinChance = 60 + (priceDiffPercent * 1000); 
+        else if (priceDiffPercent > -0.02) stepWinChance = 20; 
+        else stepWinChance = 0; 
 
         // 4. Calculate Margin %
         const currentMargin = ((myPrice - costBasis) / myPrice) * 100;
 
-        // 5. Calculate Volume (Correlated to Win Chance)
+        // 5. Calculate Volume
         const baseVolume = 10;
         const volume = Math.floor(baseVolume * (stepWinChance / 100) * 1.5) + Math.random() * 2;
 
@@ -146,7 +180,7 @@ export const RepricerView: React.FC = () => {
     // Averages
     const avgWinRate = Math.min(100, Math.floor(totalWinChance / totalSteps));
     const avgMargin = (totalMargin / totalSteps).toFixed(1);
-    const winRateChange = (avgWinRate - 25).toFixed(0); // Assuming 25% is baseline
+    const winRateChange = (avgWinRate - 25).toFixed(0); 
 
     return {
         chartData: data,
@@ -154,7 +188,7 @@ export const RepricerView: React.FC = () => {
         avgMargin,
         winRateChange
     };
-  }, [percentDrop, fixedDrop, percentLimit, fixedLimit, activeRule]);
+  }, [percentDrop, fixedDrop, percentLimit, fixedLimit, activeRule, globalSettings]);
 
   const { chartData, avgWinRate, avgMargin, winRateChange } = simulationResults;
 
@@ -174,9 +208,229 @@ export const RepricerView: React.FC = () => {
     setRuleAssignments(prev => ({ ...prev, [selectedRuleId]: newSet }));
   };
 
-  // --- Render Detail View ---
-  if (activeRule) {
-    const themeColor = getColor(activeRule.type);
+  const handleCreateStrategy = () => {
+      const id = (rules.length + 100).toString();
+      const newRule: RepricerRule = {
+          id,
+          name: newStrategy.name || 'Untitled Strategy',
+          type: newStrategy.type,
+          active: false,
+          description: newStrategy.description || 'Custom strategy configuration.'
+      };
+      setRules([...rules, newRule]);
+      setRuleAssignments(prev => ({ ...prev, [id]: new Set() }));
+      
+      // Reset and Navigate
+      setNewStrategy({ name: '', type: 'PROFIT', description: '' });
+      setSelectedRuleId(id);
+      setViewMode('DETAIL');
+  };
+
+  const toggleRuleActive = (e: React.MouseEvent, ruleId: string) => {
+      e.stopPropagation();
+      setRules(prev => prev.map(r => 
+          r.id === ruleId ? { ...r, active: !r.active } : r
+      ));
+  };
+
+  const handleRename = () => {
+    if (activeRule && tempName.trim()) {
+        setRules(prev => prev.map(r => r.id === activeRule.id ? { ...r, name: tempName } : r));
+    }
+    setIsEditingName(false);
+  };
+
+  // --- Render Functions ---
+
+  const renderGlobalSettings = () => (
+    <div className="h-full flex flex-col gap-6 animate-[fadeIn_0.3s_ease-out]">
+        <div className="flex items-center gap-4 shrink-0">
+            <button 
+                onClick={() => setViewMode('LIST')}
+                className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors"
+            >
+                <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+                <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                    Safety Guardrails
+                    <Shield className="w-5 h-5 text-neon-cyan" />
+                </h2>
+                <p className="text-zinc-500 text-xs mt-0.5">Global constraints applied to all repricing strategies.</p>
+            </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Margin Constraints */}
+            <div className="glass-panel p-6 rounded-2xl space-y-8">
+                 <div className="space-y-4">
+                     <div className="flex justify-between items-center">
+                         <label className="text-sm font-medium text-zinc-200">Minimum Profit Margin</label>
+                         <span className="text-neon-cyan font-mono font-bold">{globalSettings.minProfitMargin}%</span>
+                     </div>
+                     <input 
+                        type="range" 
+                        min="5" max="50" step="1"
+                        value={globalSettings.minProfitMargin}
+                        onChange={(e) => setGlobalSettings({...globalSettings, minProfitMargin: Number(e.target.value)})}
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-cyan" 
+                     />
+                     <p className="text-xs text-zinc-500">
+                         The absolute floor price will be calculated based on Cost Basis + {globalSettings.minProfitMargin}% Margin.
+                         No strategy can price below this point.
+                     </p>
+                 </div>
+
+                 <div className="h-px bg-white/5 w-full"></div>
+
+                 <div className="space-y-4">
+                     <div className="flex justify-between items-center">
+                         <label className="text-sm font-medium text-zinc-200">Max Daily Price Drop</label>
+                         <span className="text-neon-pink font-mono font-bold">{globalSettings.maxDailyDrop}%</span>
+                     </div>
+                     <input 
+                        type="range" 
+                        min="1" max="25" step="0.5"
+                        value={globalSettings.maxDailyDrop}
+                        onChange={(e) => setGlobalSettings({...globalSettings, maxDailyDrop: Number(e.target.value)})}
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-pink" 
+                     />
+                     <p className="text-xs text-zinc-500">
+                         Prevents price tanking. A product's price cannot decrease by more than {globalSettings.maxDailyDrop}% within a 24h rolling window.
+                     </p>
+                 </div>
+            </div>
+
+            {/* Feature Toggles */}
+            <div className="glass-panel p-6 rounded-2xl space-y-6">
+                <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">Advanced Behavior</h3>
+                
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/5">
+                    <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${globalSettings.ignoreNewSellers ? 'bg-emerald-500/20 text-emerald-400' : 'bg-zinc-800 text-zinc-500'}`}>
+                            <Shield className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <div className="text-sm font-medium text-white">Ignore New Sellers</div>
+                            <div className="text-xs text-zinc-500">Don't compete with sellers &lt; 5 ratings</div>
+                        </div>
+                    </div>
+                    <button 
+                        onClick={() => setGlobalSettings({...globalSettings, ignoreNewSellers: !globalSettings.ignoreNewSellers})}
+                        className={`w-12 h-6 rounded-full p-1 transition-colors ${globalSettings.ignoreNewSellers ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                    >
+                        <div className={`w-4 h-4 rounded-full bg-white transition-transform ${globalSettings.ignoreNewSellers ? 'translate-x-6' : 'translate-x-0'}`} />
+                    </button>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/5">
+                    <div className="flex items-center gap-3">
+                         <div className={`p-2 rounded-lg ${globalSettings.matchAmazon ? 'bg-orange-500/20 text-orange-400' : 'bg-zinc-800 text-zinc-500'}`}>
+                            <Target className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <div className="text-sm font-medium text-white">Match Amazon Price</div>
+                            <div className="text-xs text-zinc-500">Always match Amazon Retail if present</div>
+                        </div>
+                    </div>
+                    <button 
+                        onClick={() => setGlobalSettings({...globalSettings, matchAmazon: !globalSettings.matchAmazon})}
+                        className={`w-12 h-6 rounded-full p-1 transition-colors ${globalSettings.matchAmazon ? 'bg-orange-500' : 'bg-zinc-700'}`}
+                    >
+                        <div className={`w-4 h-4 rounded-full bg-white transition-transform ${globalSettings.matchAmazon ? 'translate-x-6' : 'translate-x-0'}`} />
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+  );
+
+  const renderCreateStrategy = () => (
+    <div className="h-full flex flex-col items-center justify-center animate-[fadeIn_0.3s_ease-out]">
+         <div className="w-full max-w-2xl glass-panel p-8 rounded-3xl border border-white/10 relative overflow-hidden">
+            {/* Background Decor */}
+            <div className="absolute top-0 right-0 w-64 h-64 bg-neon-cyan/5 blur-[80px] rounded-full pointer-events-none" />
+            
+            <div className="flex items-center gap-4 mb-8 relative z-10">
+                <button 
+                    onClick={() => setViewMode('LIST')}
+                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors"
+                >
+                    <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-bold text-white">Strategy Blueprint</h2>
+            </div>
+
+            <div className="space-y-6 relative z-10">
+                {/* Name Input */}
+                <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 uppercase tracking-wider font-semibold">Strategy Name</label>
+                    <input 
+                        type="text"
+                        value={newStrategy.name}
+                        onChange={(e) => setNewStrategy({...newStrategy, name: e.target.value})}
+                        placeholder="e.g., Aggressive Weekend Sale"
+                        className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-neon-cyan/50 transition-all"
+                    />
+                </div>
+
+                {/* Type Selection */}
+                <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 uppercase tracking-wider font-semibold">Optimization Goal</label>
+                    <div className="grid grid-cols-3 gap-4">
+                        {[
+                            { id: 'PROFIT', icon: DollarSign, label: 'Max Profit', color: 'text-neon-cyan', bg: 'bg-neon-cyan/10', border: 'border-neon-cyan/50' },
+                            { id: 'VELOCITY', icon: Zap, label: 'Velocity', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/50' },
+                            { id: 'LIQUIDATION', icon: Flame, label: 'Liquidation', color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/50' },
+                        ].map((opt) => (
+                            <button
+                                key={opt.id}
+                                onClick={() => setNewStrategy({...newStrategy, type: opt.id as any})}
+                                className={`
+                                    p-4 rounded-xl border flex flex-col items-center gap-3 transition-all duration-300
+                                    ${newStrategy.type === opt.id ? `${opt.bg} ${opt.border} shadow-[0_0_15px_rgba(0,0,0,0.3)]` : 'bg-white/5 border-white/5 hover:bg-white/10 text-zinc-500'}
+                                `}
+                            >
+                                <opt.icon className={`w-6 h-6 ${newStrategy.type === opt.id ? opt.color : ''}`} />
+                                <span className={`text-xs font-bold ${newStrategy.type === opt.id ? 'text-white' : ''}`}>{opt.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Description */}
+                <div className="space-y-2">
+                    <label className="text-xs text-zinc-400 uppercase tracking-wider font-semibold">Description</label>
+                    <textarea 
+                        value={newStrategy.description}
+                        onChange={(e) => setNewStrategy({...newStrategy, description: e.target.value})}
+                        placeholder="Briefly describe when this strategy should be used..."
+                        className="w-full h-24 bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-neon-cyan/50 transition-all resize-none"
+                    />
+                </div>
+
+                {/* Submit Action */}
+                <button 
+                    onClick={handleCreateStrategy}
+                    disabled={!newStrategy.name}
+                    className={`
+                        w-full py-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-all mt-4
+                        ${newStrategy.name 
+                            ? 'bg-gradient-to-r from-neon-cyan to-blue-500 text-black shadow-[0_0_20px_rgba(0,242,234,0.3)] hover:shadow-[0_0_30px_rgba(0,242,234,0.5)] hover:scale-[1.02]' 
+                            : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'}
+                    `}
+                >
+                    <Rocket className="w-5 h-5" />
+                    Initialize Strategy
+                </button>
+            </div>
+         </div>
+    </div>
+  );
+
+  const renderDetailView = () => {
+     if (!activeRule) return null;
+     const themeColor = getColor(activeRule.type);
     
     return (
       <div className="h-full flex flex-col gap-6 animate-[fadeIn_0.3s_ease-out]">
@@ -189,14 +443,45 @@ export const RepricerView: React.FC = () => {
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <div>
-              <h2 className="text-xl font-bold text-white flex items-center gap-3">
-                {activeRule.name}
-                <span className={`px-2 py-0.5 rounded text-[10px] bg-white/5 border border-white/10 tracking-wider font-mono ${activeRule.active ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                    {activeRule.active ? 'ACTIVE' : 'PAUSED'}
-                </span>
-              </h2>
-              <p className="text-zinc-500 text-xs mt-0.5">{activeRule.description}</p>
+            <div className="flex flex-col">
+              {isEditingName ? (
+                <div className="flex items-center gap-2 h-7">
+                    <input 
+                        autoFocus
+                        type="text" 
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
+                        onBlur={handleRename}
+                        onKeyDown={(e) => e.key === 'Enter' && handleRename()}
+                        className="bg-zinc-900 border border-neon-cyan/50 text-xl font-bold text-white px-2 py-0.5 rounded focus:outline-none min-w-[200px]"
+                    />
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 h-7 group">
+                    <h2 
+                        onClick={() => {
+                            setTempName(activeRule.name);
+                            setIsEditingName(true);
+                        }}
+                        className="text-xl font-bold text-white cursor-pointer hover:underline decoration-dashed underline-offset-4 decoration-zinc-600"
+                    >
+                        {activeRule.name}
+                    </h2>
+                    <button 
+                        onClick={() => {
+                            setTempName(activeRule.name);
+                            setIsEditingName(true);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-white transition-all"
+                    >
+                        <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <span className={`px-2 py-0.5 rounded text-[10px] bg-white/5 border border-white/10 tracking-wider font-mono ${activeRule.active ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                        {activeRule.active ? 'ACTIVE' : 'PAUSED'}
+                    </span>
+                </div>
+              )}
+              <p className="text-zinc-500 text-xs mt-1">{activeRule.description}</p>
             </div>
           </div>
           <button 
@@ -533,9 +818,15 @@ export const RepricerView: React.FC = () => {
         </div>
       </div>
     );
-  }
+  };
 
-  // --- Render List View ---
+  // --- Main Render Switch ---
+
+  if (viewMode === 'DETAIL' && activeRule) return renderDetailView();
+  if (viewMode === 'SETTINGS') return renderGlobalSettings();
+  if (viewMode === 'CREATE') return renderCreateStrategy();
+
+  // --- List View Render ---
   return (
     <div className="h-full flex flex-col animate-[fadeIn_0.5s_ease-out]">
       <div className="flex items-center justify-between mb-8">
@@ -543,14 +834,17 @@ export const RepricerView: React.FC = () => {
           <h2 className="text-2xl font-semibold text-white">Smart Repricer Strategies</h2>
           <p className="text-zinc-500 text-sm mt-1">Configure automated pricing rules based on market conditions.</p>
         </div>
-        <button className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white hover:bg-white/10 transition flex items-center gap-2">
+        <button 
+            onClick={() => setViewMode('SETTINGS')}
+            className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-white hover:bg-white/10 transition flex items-center gap-2"
+        >
             <Settings2 className="w-4 h-4" />
             Global Settings
         </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {REPRICER_RULES.map((rule) => {
+        {rules.map((rule) => {
           const count = ruleAssignments[rule.id]?.size || 0;
           
           return (
@@ -574,9 +868,12 @@ export const RepricerView: React.FC = () => {
                 <div className="p-3 bg-white/5 rounded-xl border border-white/5 group-hover:scale-110 transition-transform duration-300">
                     {getIcon(rule.type)}
                 </div>
-                <div className={`px-2 py-1 rounded text-[10px] font-bold tracking-wider border ${rule.active ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' : 'bg-zinc-500/10 border-zinc-500/20 text-zinc-500'}`}>
-                    {rule.active ? 'ON' : 'OFF'}
-                </div>
+                 <button
+                    onClick={(e) => toggleRuleActive(e, rule.id)}
+                    className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 focus:outline-none ${rule.active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                >
+                    <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-300 ${rule.active ? 'translate-x-6' : 'translate-x-0'}`} />
+                </button>
                 </div>
                 
                 <h3 className="text-lg font-medium text-white mb-2 group-hover:text-neon-cyan transition-colors relative z-10">
@@ -600,9 +897,12 @@ export const RepricerView: React.FC = () => {
         })}
 
         {/* New Strategy Card */}
-        <div className="border border-dashed border-white/10 rounded-2xl p-6 flex flex-col items-center justify-center gap-4 text-zinc-500 hover:text-white hover:border-white/30 hover:bg-white/[0.02] transition-all cursor-pointer group">
+        <div 
+            onClick={() => setViewMode('CREATE')}
+            className="border border-dashed border-white/10 rounded-2xl p-6 flex flex-col items-center justify-center gap-4 text-zinc-500 hover:text-white hover:border-white/30 hover:bg-white/[0.02] transition-all cursor-pointer group"
+        >
             <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform">
-                <Settings2 className="w-6 h-6" />
+                <Plus className="w-6 h-6" />
             </div>
             <span className="text-sm font-medium">Create Custom Strategy</span>
         </div>
