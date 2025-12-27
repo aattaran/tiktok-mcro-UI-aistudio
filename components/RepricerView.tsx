@@ -1,41 +1,18 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { REPRICER_RULES, PRODUCTS } from '../constants';
 import { RepricerRule, Product } from '../types';
 import { 
   Zap, TrendingDown, DollarSign, Moon, ArrowLeft, Save, Search, 
-  CheckCircle2, AlertCircle, BarChart3, Settings2, ShieldAlert,
-  CheckSquare, Square, Filter
+  BarChart3, Settings2, CheckSquare, Square, Clock, ArrowDownWideNarrow, AlertCircle, CheckCircle2
 } from 'lucide-react';
 
-// --- Mock Data Generators ---
-
-const generateSimulationData = (type: string) => {
-  const data = [];
-  let price = 100;
-  let sales = 10;
-  
-  for (let i = 0; i < 24; i++) {
-    if (type === 'LIQUIDATION') {
-      price = price * 0.95;
-      sales = sales * 1.2 + (Math.random() * 5);
-    } else if (type === 'VELOCITY') {
-      price = 100 - (Math.sin(i / 2) * 15);
-      sales = 20 + (Math.cos(i / 2) * 10) + (Math.random() * 5);
-    } else {
-      // Profit
-      price = 100 + (i * 0.5);
-      sales = 15 + (Math.random() * 2);
-    }
-    
-    data.push({
-      time: `${i}:00`,
-      price: Math.max(0, parseFloat(price.toFixed(2))),
-      volume: Math.max(0, Math.floor(sales))
-    });
-  }
-  return data;
-};
+// --- Types for Simulation ---
+interface SimulationDataPoint {
+  time: string;
+  price: number;
+  volume: number;
+}
 
 // --- Helpers ---
 
@@ -59,14 +36,21 @@ const getColor = (type: string) => {
 
 export const RepricerView: React.FC = () => {
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
-  
-  // Track assigned products per rule (Mock persistence)
   const [ruleAssignments, setRuleAssignments] = useState<Record<string, Set<string>>>({
-    '1': new Set(['1', '3']), // Pre-select some for demo
+    '1': new Set(['1', '3']), 
   });
-
-  // Track search query for product selector
   const [searchQuery, setSearchQuery] = useState('');
+
+  // --- Dynamic Configuration State ---
+  // "When" Condition
+  const [salesThreshold, setSalesThreshold] = useState(5);
+  const [periodDays, setPeriodDays] = useState(7);
+  
+  // "Set Price" Actions
+  const [percentDrop, setPercentDrop] = useState(2.5);
+  const [percentLimit, setPercentLimit] = useState(15.0);
+  const [fixedDrop, setFixedDrop] = useState(0.50);
+  const [fixedLimit, setFixedLimit] = useState(5.00);
 
   const activeRule = useMemo(() => 
     REPRICER_RULES.find(r => r.id === selectedRuleId), 
@@ -76,36 +60,74 @@ export const RepricerView: React.FC = () => {
     ruleAssignments[selectedRuleId || ''] || new Set(), 
   [ruleAssignments, selectedRuleId]);
 
-  // Handlers
+  // --- Real-time Simulation Logic ---
+  
+  // Calculate an "Aggression Score" (0-100) based on inputs to drive the visuals
+  const aggressionScore = useMemo(() => {
+    // Heuristic: Higher drops and higher limits = more aggressive
+    const pScore = (percentDrop / 5) * 40; // 5% drop is "high" contribution
+    const fScore = (fixedDrop / 2) * 40;   // $2 drop is "high" contribution
+    const limitScore = (percentLimit / 20) * 20; // Allow deeper cuts
+    return Math.min(100, Math.max(0, pScore + fScore + limitScore));
+  }, [percentDrop, fixedDrop, percentLimit]);
+
+  // Derived KPIs
+  const winRate = useMemo(() => Math.floor(25 + (aggressionScore * 0.6)), [aggressionScore]);
+  const marginImpact = useMemo(() => (aggressionScore * 0.35).toFixed(1), [aggressionScore]);
+  const winRateChange = useMemo(() => (aggressionScore * 0.1).toFixed(1), [aggressionScore]);
+
+  // Generate Chart Data based on inputs
+  const chartData = useMemo(() => {
+    const data: SimulationDataPoint[] = [];
+    let price = 100;
+    // Volume base is inversely related to price, plus randomness
+    let volumeBase = 10; 
+
+    // Simulation loop (24 hours or 24 steps)
+    for (let i = 0; i < 24; i++) {
+        // Apply the configured drops cumulatively to simulate the "Action" over time
+        // We dampen it so the chart doesn't go to zero instantly
+        const dropFactor = (percentDrop / 100) * 0.5; 
+        const fixedFactor = fixedDrop * 0.1;
+
+        if (activeRule?.type === 'PROFIT') {
+             // Profit strategies might increase price
+             price = price * (1 + dropFactor) + fixedFactor;
+        } else {
+             // Velocity/Liquidation decrease price
+             price = Math.max(50, price - (price * dropFactor) - fixedFactor);
+        }
+
+        // Sales volume reacts to price changes
+        // Lower price = Higher volume (elasticity)
+        const elasticity = 1.5;
+        const priceChangeRatio = (100 - price) / 100;
+        const volume = volumeBase * (1 + (priceChangeRatio * elasticity)) + (Math.random() * 5);
+
+        data.push({
+            time: `${i}:00`,
+            price: parseFloat(price.toFixed(2)),
+            volume: Math.floor(volume)
+        });
+    }
+    return data;
+  }, [percentDrop, fixedDrop, activeRule]);
+
+  // --- Handlers ---
   const toggleProduct = (productId: string) => {
     if (!selectedRuleId) return;
-    
     const newSet = new Set(assignedProductIds);
-    if (newSet.has(productId)) {
-      newSet.delete(productId);
-    } else {
-      newSet.add(productId);
-    }
-    
-    setRuleAssignments(prev => ({
-      ...prev,
-      [selectedRuleId]: newSet
-    }));
+    if (newSet.has(productId)) newSet.delete(productId);
+    else newSet.add(productId);
+    setRuleAssignments(prev => ({ ...prev, [selectedRuleId]: newSet }));
   };
 
   const handleSelectAll = () => {
     if (!selectedRuleId) return;
     const allIds = PRODUCTS.map(p => p.id);
     const newSet = new Set(assignedProductIds.size === allIds.length ? [] : allIds);
-    setRuleAssignments(prev => ({
-        ...prev,
-        [selectedRuleId]: newSet
-    }));
+    setRuleAssignments(prev => ({ ...prev, [selectedRuleId]: newSet }));
   };
-
-  const chartData = useMemo(() => 
-    activeRule ? generateSimulationData(activeRule.type) : [], 
-  [activeRule]);
 
   // --- Render Detail View ---
   if (activeRule) {
@@ -145,62 +167,159 @@ export const RepricerView: React.FC = () => {
         <div className="flex-1 flex flex-col lg:flex-row gap-6 min-h-0">
           
           {/* Left Column: Configuration & Simulation */}
-          <div className="w-full lg:w-1/3 flex flex-col gap-6 overflow-y-auto pr-2">
+          <div className="w-full lg:w-5/12 flex flex-col gap-6 overflow-y-auto pr-2">
             
             {/* KPI Simulation Cards */}
             <div className="grid grid-cols-2 gap-3">
-                <div className="glass-panel p-4 rounded-xl relative overflow-hidden">
-                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Win Rate</div>
-                    <div className="text-2xl font-bold text-white">42% <span className="text-emerald-500 text-xs align-top">+5%</span></div>
-                    <div className="absolute right-0 bottom-0 opacity-10">
-                        <BarChart3 className="w-12 h-12" />
+                <div className="glass-panel p-4 rounded-xl relative overflow-hidden group">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Proj. Win Rate</div>
+                    <div className="text-2xl font-bold text-white flex items-baseline gap-2">
+                        {winRate}% 
+                        <span className="text-emerald-500 text-xs font-medium">+{winRateChange}%</span>
+                    </div>
+                    <div className="absolute right-0 bottom-0 opacity-[0.03] group-hover:opacity-10 transition-opacity">
+                        <BarChart3 className="w-16 h-16" />
+                    </div>
+                    <div className="h-1 w-full bg-zinc-800 rounded-full mt-3 overflow-hidden">
+                        <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${winRate}%` }} />
                     </div>
                 </div>
-                <div className="glass-panel p-4 rounded-xl relative overflow-hidden">
-                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Margin Impact</div>
-                    <div className="text-2xl font-bold text-white">18% <span className="text-red-500 text-xs align-top">-2%</span></div>
-                    <div className="absolute right-0 bottom-0 opacity-10">
-                        <DollarSign className="w-12 h-12" />
+                <div className="glass-panel p-4 rounded-xl relative overflow-hidden group">
+                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Margin Impact</div>
+                    <div className="text-2xl font-bold text-white flex items-baseline gap-2">
+                        -{marginImpact}% 
+                        <span className="text-zinc-500 text-xs font-medium">avg</span>
+                    </div>
+                    <div className="absolute right-0 bottom-0 opacity-[0.03] group-hover:opacity-10 transition-opacity">
+                        <DollarSign className="w-16 h-16" />
+                    </div>
+                     <div className="h-1 w-full bg-zinc-800 rounded-full mt-3 overflow-hidden">
+                        <div className="h-full bg-neon-pink transition-all duration-500" style={{ width: `${Math.min(100, parseFloat(marginImpact) * 2)}%` }} />
                     </div>
                 </div>
             </div>
 
-            {/* Config Panel */}
-            <div className="glass-panel p-6 rounded-2xl space-y-6">
-                <div className="flex items-center gap-2 text-white font-medium mb-4">
-                    <Settings2 className="w-4 h-4 text-zinc-400" />
-                    Strategy Parameters
+            {/* LOGIC CONFIGURATION PANEL */}
+            <div className="glass-panel p-6 rounded-2xl space-y-8 border-l-4" style={{ borderLeftColor: themeColor }}>
+                
+                {/* Section 1: Trigger Conditions */}
+                <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-white font-medium">
+                        <Clock className="w-4 h-4 text-zinc-400" />
+                        Trigger Condition
+                        <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded text-zinc-400 font-normal ml-auto">WHEN</span>
+                    </div>
+                    
+                    <div className="p-4 bg-black/20 rounded-xl border border-white/5 space-y-4">
+                        <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
+                            <span>If Sales Count is lower than</span>
+                            <input 
+                                type="number" 
+                                value={salesThreshold}
+                                onChange={(e) => setSalesThreshold(Number(e.target.value))}
+                                className="w-16 bg-zinc-900 border border-white/10 rounded-lg px-2 py-1 text-center text-white focus:border-neon-cyan focus:outline-none"
+                            />
+                            <span>units</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
+                             <span>Over a period of</span>
+                             <input 
+                                type="number" 
+                                value={periodDays}
+                                onChange={(e) => setPeriodDays(Number(e.target.value))}
+                                className="w-16 bg-zinc-900 border border-white/10 rounded-lg px-2 py-1 text-center text-white focus:border-neon-cyan focus:outline-none"
+                            />
+                            <span>days</span>
+                        </div>
+                    </div>
                 </div>
 
-                {/* Simulated Inputs based on type */}
+                {/* Section 2: Pricing Actions */}
                 <div className="space-y-4">
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs">
-                            <span className="text-zinc-400">Aggression Level</span>
-                            <span className="text-white">High</span>
-                        </div>
-                        <input type="range" className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-cyan" />
+                    <div className="flex items-center gap-2 text-white font-medium">
+                        <ArrowDownWideNarrow className="w-4 h-4 text-zinc-400" />
+                        Pricing Actions
+                        <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded text-zinc-400 font-normal ml-auto">THEN</span>
                     </div>
-
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs">
-                            <span className="text-zinc-400">Min Price Floor ($)</span>
-                            <span className="text-white">$14.50</span>
-                        </div>
-                        <div className="flex gap-2">
-                             <input type="number" defaultValue={14.50} className="w-full bg-zinc-900 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-neon-cyan/50" />
-                        </div>
-                    </div>
-
-                    {activeRule.type === 'VELOCITY' && (
+                    
+                    <div className="p-4 bg-black/20 rounded-xl border border-white/5 space-y-5">
+                        {/* Percentage Rule */}
                         <div className="space-y-2">
-                            <div className="flex justify-between text-xs">
-                                <span className="text-zinc-400">Target Daily Units</span>
-                                <span className="text-white">25 / day</span>
+                             <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+                                <span>Decrease price by</span>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        step="0.1"
+                                        value={percentDrop}
+                                        onChange={(e) => setPercentDrop(Number(e.target.value))}
+                                        className="w-20 bg-zinc-900 border border-white/10 rounded-lg pl-3 pr-6 py-1 text-white focus:border-neon-cyan focus:outline-none"
+                                    />
+                                    <span className="absolute right-2 top-1.5 text-xs text-zinc-500">%</span>
+                                </div>
+                                <span>down to a limit of</span>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        step="1"
+                                        value={percentLimit}
+                                        onChange={(e) => setPercentLimit(Number(e.target.value))}
+                                        className="w-20 bg-zinc-900 border border-white/10 rounded-lg pl-3 pr-6 py-1 text-white focus:border-neon-cyan focus:outline-none"
+                                    />
+                                    <span className="absolute right-2 top-1.5 text-xs text-zinc-500">%</span>
+                                </div>
                             </div>
-                            <input type="range" className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-400" />
+                            <input 
+                                type="range" 
+                                min="0" max="10" step="0.1" 
+                                value={percentDrop}
+                                onChange={(e) => setPercentDrop(Number(e.target.value))}
+                                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-cyan" 
+                            />
                         </div>
-                    )}
+
+                        {/* Divider */}
+                        <div className="flex items-center gap-3">
+                            <div className="h-px bg-white/5 flex-1"></div>
+                            <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">AND / OR</span>
+                            <div className="h-px bg-white/5 flex-1"></div>
+                        </div>
+
+                        {/* Fixed Value Rule */}
+                        <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+                                <span>Decrease price by</span>
+                                <div className="relative">
+                                    <span className="absolute left-2 top-1.5 text-xs text-zinc-500">$</span>
+                                    <input 
+                                        type="number" 
+                                        step="0.01"
+                                        value={fixedDrop}
+                                        onChange={(e) => setFixedDrop(Number(e.target.value))}
+                                        className="w-20 bg-zinc-900 border border-white/10 rounded-lg pl-5 pr-2 py-1 text-white focus:border-neon-cyan focus:outline-none"
+                                    />
+                                </div>
+                                <span>up to a limit of</span>
+                                <div className="relative">
+                                    <span className="absolute left-2 top-1.5 text-xs text-zinc-500">$</span>
+                                    <input 
+                                        type="number" 
+                                        step="0.50"
+                                        value={fixedLimit}
+                                        onChange={(e) => setFixedLimit(Number(e.target.value))}
+                                        className="w-20 bg-zinc-900 border border-white/10 rounded-lg pl-5 pr-2 py-1 text-white focus:border-neon-cyan focus:outline-none"
+                                    />
+                                </div>
+                            </div>
+                            <input 
+                                type="range" 
+                                min="0" max="5" step="0.1" 
+                                value={fixedDrop}
+                                onChange={(e) => setFixedDrop(Number(e.target.value))}
+                                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-pink" 
+                            />
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -208,7 +327,7 @@ export const RepricerView: React.FC = () => {
             <div className="glass-panel p-6 rounded-2xl flex-1 min-h-[250px] flex flex-col">
                 <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-medium text-white">Projected Performance</h3>
-                    <div className="flex gap-2">
+                    <div className="flex gap-4">
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
                             <div className="w-2 h-2 rounded-full" style={{ background: themeColor }}></div>
                             Price
@@ -242,6 +361,7 @@ export const RepricerView: React.FC = () => {
                             strokeWidth={2}
                             fillOpacity={1} 
                             fill="url(#colorPrice)" 
+                            animationDuration={300}
                         />
                          <Area 
                             type="step" 
@@ -250,6 +370,7 @@ export const RepricerView: React.FC = () => {
                             strokeWidth={1}
                             strokeDasharray="4 4"
                             fill="transparent" 
+                            animationDuration={300}
                         />
                         </AreaChart>
                     </ResponsiveContainer>
