@@ -10,7 +10,9 @@ export enum Tab {
     id: string;
     sku: string;
     title: string;
+    description: string;
     optimizedTitle?: string;
+    optimizedDescription?: string;
     price: number;
     stock: number;
     image: string;
