@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Tab } from '../types';
-import { LayoutGrid, Zap, Tag, PieChart, Truck, Settings, ChevronLeft, ChevronRight, Hexagon } from 'lucide-react';
+import { LayoutGrid, Zap, Tag, PieChart, Truck, Settings, ChevronLeft, ChevronRight, Hexagon, BarChart2 } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: Tab;
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { id: Tab.PROMOTIONS, label: 'Promotions', icon: Tag },
   { id: Tab.FINANCIALS, label: 'Financials', icon: PieChart },
   { id: Tab.FULFILLMENT, label: 'Fulfillment', icon: Truck },
+  { id: Tab.ANALYTICS, label: 'Analytics', icon: BarChart2 },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {

@@ -4,6 +4,7 @@ export enum Tab {
     PROMOTIONS = 'PROMOTIONS',
     FINANCIALS = 'FINANCIALS',
     FULFILLMENT = 'FULFILLMENT',
+    ANALYTICS = 'ANALYTICS',
   }
   
   export interface Product {
@@ -41,4 +42,3 @@ export enum Tab {
     title: string;
     type: 'FLASH' | 'COUPON';
   }
-  

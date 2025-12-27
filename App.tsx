@@ -5,6 +5,7 @@ import { RepricerView } from './components/RepricerView';
 import { PromotionsView } from './components/PromotionsView';
 import { FinancialsView } from './components/FinancialsView';
 import { FulfillmentView } from './components/FulfillmentView';
+import { AnalyticsView } from './components/AnalyticsView';
 import { Tab } from './types';
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
       case Tab.PROMOTIONS: return <PromotionsView />;
       case Tab.FINANCIALS: return <FinancialsView />;
       case Tab.FULFILLMENT: return <FulfillmentView />;
+      case Tab.ANALYTICS: return <AnalyticsView />;
       default: return <InventoryView />;
     }
   };

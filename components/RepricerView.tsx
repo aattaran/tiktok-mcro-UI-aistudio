@@ -1,16 +1,18 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line } from 'recharts';
 import { REPRICER_RULES, PRODUCTS } from '../constants';
 import { RepricerRule, Product } from '../types';
 import { 
   Zap, TrendingDown, DollarSign, Moon, ArrowLeft, Save, Search, 
-  BarChart3, Settings2, CheckSquare, Square, Clock, ArrowDownWideNarrow, AlertCircle, CheckCircle2
+  BarChart3, Settings2, CheckSquare, Square, Clock, ArrowDownWideNarrow, AlertCircle, CheckCircle2,
+  Swords
 } from 'lucide-react';
 
 // --- Types for Simulation ---
 interface SimulationDataPoint {
   time: string;
   price: number;
+  competitorPrice: number;
   volume: number;
 }
 
@@ -60,58 +62,101 @@ export const RepricerView: React.FC = () => {
     ruleAssignments[selectedRuleId || ''] || new Set(), 
   [ruleAssignments, selectedRuleId]);
 
-  // --- Real-time Simulation Logic ---
-  
-  // Calculate an "Aggression Score" (0-100) based on inputs to drive the visuals
-  const aggressionScore = useMemo(() => {
-    // Heuristic: Higher drops and higher limits = more aggressive
-    const pScore = (percentDrop / 5) * 40; // 5% drop is "high" contribution
-    const fScore = (fixedDrop / 2) * 40;   // $2 drop is "high" contribution
-    const limitScore = (percentLimit / 20) * 20; // Allow deeper cuts
-    return Math.min(100, Math.max(0, pScore + fScore + limitScore));
-  }, [percentDrop, fixedDrop, percentLimit]);
-
-  // Derived KPIs
-  const winRate = useMemo(() => Math.floor(25 + (aggressionScore * 0.6)), [aggressionScore]);
-  const marginImpact = useMemo(() => (aggressionScore * 0.35).toFixed(1), [aggressionScore]);
-  const winRateChange = useMemo(() => (aggressionScore * 0.1).toFixed(1), [aggressionScore]);
-
-  // Generate Chart Data based on inputs
-  const chartData = useMemo(() => {
+  // --- Real-time Simulation Engine ---
+  const simulationResults = useMemo(() => {
     const data: SimulationDataPoint[] = [];
-    let price = 100;
-    // Volume base is inversely related to price, plus randomness
-    let volumeBase = 10; 
+    
+    // Initial State
+    let myPrice = 100.00;
+    let competitorPrice = 100.50; // Starts slightly higher
+    const costBasis = 65.00; // Fixed cost assumption for margin calc
 
-    // Simulation loop (24 hours or 24 steps)
-    for (let i = 0; i < 24; i++) {
-        // Apply the configured drops cumulatively to simulate the "Action" over time
-        // We dampen it so the chart doesn't go to zero instantly
-        const dropFactor = (percentDrop / 100) * 0.5; 
-        const fixedFactor = fixedDrop * 0.1;
+    // Accumulators for KPIs
+    let totalWinChance = 0;
+    let totalMargin = 0;
+    let totalVolume = 0;
+    const totalSteps = 24;
 
-        if (activeRule?.type === 'PROFIT') {
-             // Profit strategies might increase price
-             price = price * (1 + dropFactor) + fixedFactor;
+    // Simulation Loop (24h)
+    for (let i = 0; i < totalSteps; i++) {
+        // 1. Simulate Competitor Moves (Random Walk + Market Trends)
+        // Competitors react to time of day and random noise
+        const marketNoise = (Math.random() - 0.5) * 2; 
+        const marketTrend = Math.sin(i / 6) * 3; 
+        competitorPrice = 100.50 + marketTrend + marketNoise;
+
+        // 2. Apply User Strategy (My Price Logic)
+        const dropFactor = (percentDrop / 100);
+        
+        let targetPrice = myPrice;
+             
+        // Logic: If we are losing buy box (myPrice >= competitorPrice), trigger the drop rule
+        if (myPrice >= competitorPrice * 0.99) {
+            targetPrice = myPrice * (1 - dropFactor) - fixedDrop;
         } else {
-             // Velocity/Liquidation decrease price
-             price = Math.max(50, price - (price * dropFactor) - fixedFactor);
+            // If we are winning significantly, maybe creep up (Profit strategy) or hold
+            if (activeRule?.type === 'PROFIT') {
+                targetPrice = myPrice * 1.01; 
+            } else if (activeRule?.type === 'VELOCITY') {
+                // Velocity keeps price competitive but stable if winning
+                targetPrice = Math.min(myPrice, competitorPrice - 0.10);
+            }
         }
 
-        // Sales volume reacts to price changes
-        // Lower price = Higher volume (elasticity)
-        const elasticity = 1.5;
-        const priceChangeRatio = (100 - price) / 100;
-        const volume = volumeBase * (1 + (priceChangeRatio * elasticity)) + (Math.random() * 5);
+        // Apply Limits (Floor Calculation)
+        // The floor is calculated from the base price (100) minus the limits set by user
+        const maxPercentDrop = 100 * (percentLimit / 100);
+        const maxFixedDrop = fixedLimit;
+        const floorPrice = 100 - maxPercentDrop - maxFixedDrop;
+        
+        // Ensure price doesn't go below floor or cost basis (safety)
+        myPrice = Math.max(Math.max(floorPrice, costBasis * 1.05), targetPrice);
+
+
+        // 3. Calculate Win Probability for this step
+        // Win rate is a sigmoid function of price difference
+        const priceDiffPercent = (competitorPrice - myPrice) / competitorPrice;
+        let stepWinChance = 0;
+        
+        if (priceDiffPercent > 0.03) stepWinChance = 95; // 3% cheaper -> Dominate Buy Box
+        else if (priceDiffPercent > 0) stepWinChance = 60 + (priceDiffPercent * 1000); // Slightly cheaper -> Fight for Buy Box
+        else if (priceDiffPercent > -0.02) stepWinChance = 20; // Slightly more expensive -> Rotational win
+        else stepWinChance = 0; // Way more expensive -> No sales
+
+        // 4. Calculate Margin %
+        const currentMargin = ((myPrice - costBasis) / myPrice) * 100;
+
+        // 5. Calculate Volume (Correlated to Win Chance)
+        const baseVolume = 10;
+        const volume = Math.floor(baseVolume * (stepWinChance / 100) * 1.5) + Math.random() * 2;
+
+        // Accumulate
+        totalWinChance += stepWinChance;
+        totalMargin += currentMargin;
+        totalVolume += volume;
 
         data.push({
             time: `${i}:00`,
-            price: parseFloat(price.toFixed(2)),
-            volume: Math.floor(volume)
+            price: parseFloat(myPrice.toFixed(2)),
+            competitorPrice: parseFloat(competitorPrice.toFixed(2)),
+            volume: volume
         });
     }
-    return data;
-  }, [percentDrop, fixedDrop, activeRule]);
+
+    // Averages
+    const avgWinRate = Math.min(100, Math.floor(totalWinChance / totalSteps));
+    const avgMargin = (totalMargin / totalSteps).toFixed(1);
+    const winRateChange = (avgWinRate - 25).toFixed(0); // Assuming 25% is baseline
+
+    return {
+        chartData: data,
+        avgWinRate,
+        avgMargin,
+        winRateChange
+    };
+  }, [percentDrop, fixedDrop, percentLimit, fixedLimit, activeRule]);
+
+  const { chartData, avgWinRate, avgMargin, winRateChange } = simulationResults;
 
   // --- Handlers ---
   const toggleProduct = (productId: string) => {
@@ -172,29 +217,36 @@ export const RepricerView: React.FC = () => {
             {/* KPI Simulation Cards */}
             <div className="grid grid-cols-2 gap-3">
                 <div className="glass-panel p-4 rounded-xl relative overflow-hidden group">
-                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Proj. Win Rate</div>
+                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold flex items-center gap-2">
+                        Proj. Win Rate
+                        <span className="p-0.5 rounded bg-zinc-800 text-zinc-400 cursor-help" title="Probability of winning the Buy Box based on price vs competitor">
+                            <AlertCircle className="w-3 h-3" />
+                        </span>
+                    </div>
                     <div className="text-2xl font-bold text-white flex items-baseline gap-2">
-                        {winRate}% 
-                        <span className="text-emerald-500 text-xs font-medium">+{winRateChange}%</span>
+                        {avgWinRate}% 
+                        <span className={`${Number(winRateChange) >= 0 ? 'text-emerald-500' : 'text-red-500'} text-xs font-medium`}>
+                             {Number(winRateChange) > 0 ? '+' : ''}{winRateChange}%
+                        </span>
                     </div>
                     <div className="absolute right-0 bottom-0 opacity-[0.03] group-hover:opacity-10 transition-opacity">
-                        <BarChart3 className="w-16 h-16" />
+                        <Swords className="w-16 h-16" />
                     </div>
                     <div className="h-1 w-full bg-zinc-800 rounded-full mt-3 overflow-hidden">
-                        <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${winRate}%` }} />
+                        <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${avgWinRate}%` }} />
                     </div>
                 </div>
                 <div className="glass-panel p-4 rounded-xl relative overflow-hidden group">
-                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Margin Impact</div>
+                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Avg. Margin</div>
                     <div className="text-2xl font-bold text-white flex items-baseline gap-2">
-                        -{marginImpact}% 
-                        <span className="text-zinc-500 text-xs font-medium">avg</span>
+                        {avgMargin}% 
+                        <span className="text-zinc-500 text-xs font-medium">real-time</span>
                     </div>
                     <div className="absolute right-0 bottom-0 opacity-[0.03] group-hover:opacity-10 transition-opacity">
                         <DollarSign className="w-16 h-16" />
                     </div>
                      <div className="h-1 w-full bg-zinc-800 rounded-full mt-3 overflow-hidden">
-                        <div className="h-full bg-neon-pink transition-all duration-500" style={{ width: `${Math.min(100, parseFloat(marginImpact) * 2)}%` }} />
+                        <div className="h-full bg-neon-pink transition-all duration-500" style={{ width: `${Math.min(100, parseFloat(avgMargin) * 2)}%` }} />
                     </div>
                 </div>
             </div>
@@ -326,11 +378,15 @@ export const RepricerView: React.FC = () => {
             {/* Simulation Chart */}
             <div className="glass-panel p-6 rounded-2xl flex-1 min-h-[250px] flex flex-col">
                 <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-sm font-medium text-white">Projected Performance</h3>
+                    <h3 className="text-sm font-medium text-white">Projected Performance vs Competitor</h3>
                     <div className="flex gap-4">
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
                             <div className="w-2 h-2 rounded-full" style={{ background: themeColor }}></div>
-                            Price
+                            My Price
+                        </div>
+                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                            <div className="w-3 h-1 rounded-full bg-yellow-500/50 border border-dashed border-yellow-500"></div>
+                            Competitor
                         </div>
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
                             <div className="w-2 h-2 rounded-full bg-zinc-600"></div>
@@ -349,11 +405,22 @@ export const RepricerView: React.FC = () => {
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
                         <XAxis dataKey="time" hide />
-                        <YAxis hide />
+                        <YAxis hide domain={['dataMin - 5', 'dataMax + 5']} />
                         <Tooltip 
                             contentStyle={{ backgroundColor: '#0F1115', border: '1px solid #ffffff10', borderRadius: '8px' }}
                             itemStyle={{ fontSize: '12px' }}
                         />
+                        {/* Competitor Line */}
+                        <Area
+                            type="monotone"
+                            dataKey="competitorPrice"
+                            stroke="#eab308"
+                            strokeWidth={2}
+                            strokeDasharray="5 5"
+                            fill="transparent"
+                            isAnimationActive={false}
+                        />
+                        {/* My Price */}
                         <Area 
                             type="monotone" 
                             dataKey="price" 
@@ -363,12 +430,13 @@ export const RepricerView: React.FC = () => {
                             fill="url(#colorPrice)" 
                             animationDuration={300}
                         />
+                        {/* Volume Bar (represented as step line) */}
                          <Area 
                             type="step" 
                             dataKey="volume" 
                             stroke="#52525b" 
                             strokeWidth={1}
-                            strokeDasharray="4 4"
+                            strokeDasharray="2 2"
                             fill="transparent" 
                             animationDuration={300}
                         />
