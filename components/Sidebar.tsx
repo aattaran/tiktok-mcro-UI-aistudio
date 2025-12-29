@@ -85,31 +85,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange }) => {
         })}
       </nav>
 
-      {/* Footer / User */}
-      <div className={`p-4 border-t border-white/5 ${isCollapsed ? 'flex flex-col items-center gap-4' : ''}`}>
-        <button 
-            className={`
-                flex items-center rounded-xl text-zinc-500 hover:text-white hover:bg-white/5 transition-colors
-                ${isCollapsed ? 'justify-center p-2 w-full' : 'w-full gap-3 px-4 py-3'}
-            `}
-            title={isCollapsed ? 'Settings' : undefined}
-        >
-          <Settings className="w-5 h-5" />
-          {!isCollapsed && <span className="font-medium">Settings</span>}
-        </button>
-        
-        <div className={`mt-2 flex items-center ${isCollapsed ? 'justify-center' : 'px-4 gap-3'}`}>
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-neon-cyan to-neon-pink p-[1px] flex-shrink-0">
-            <div className="w-full h-full rounded-full bg-black flex items-center justify-center text-[10px] font-bold text-white">
-              JD
+      {/* Footer / User & Settings */}
+      <div className={`p-4 border-t border-white/5`}>
+        <div className={`flex items-center ${isCollapsed ? 'flex-col gap-4 justify-center' : 'justify-between px-2'}`}>
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-neon-cyan to-neon-pink p-[1px] flex-shrink-0">
+              <div className="w-full h-full rounded-full bg-black flex items-center justify-center text-[10px] font-bold text-white">
+                JD
+              </div>
             </div>
+            {!isCollapsed && (
+              <div className="flex flex-col overflow-hidden">
+                <span className="text-xs text-white font-medium truncate">John Doe</span>
+                <span className="text-[10px] text-zinc-500 truncate">Pro Plan</span>
+              </div>
+            )}
           </div>
-          {!isCollapsed && (
-            <div className="flex flex-col overflow-hidden">
-              <span className="text-xs text-white font-medium truncate">John Doe</span>
-              <span className="text-[10px] text-zinc-500 truncate">Pro Plan</span>
-            </div>
-          )}
+          
+          <button 
+            onClick={() => onTabChange(Tab.SETTINGS)}
+            className={`
+              p-2 rounded-lg transition-all group relative
+              ${activeTab === Tab.SETTINGS ? 'text-neon-cyan bg-white/5 shadow-[0_0_10px_rgba(0,242,234,0.2)]' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/5'}
+            `}
+            title="Settings"
+          >
+            <Settings className={`w-4 h-4 transition-transform group-hover:rotate-45 ${activeTab === Tab.SETTINGS ? 'animate-pulse' : ''}`} />
+          </button>
         </div>
       </div>
     </div>

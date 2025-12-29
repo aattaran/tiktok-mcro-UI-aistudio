@@ -6,6 +6,7 @@ import { PromotionsView } from './components/PromotionsView';
 import { FinancialsView } from './components/FinancialsView';
 import { FulfillmentView } from './components/FulfillmentView';
 import { AnalyticsView } from './components/AnalyticsView';
+import { SettingsView } from './components/SettingsView';
 import { Tab } from './types';
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
       case Tab.FINANCIALS: return <FinancialsView />;
       case Tab.FULFILLMENT: return <FulfillmentView />;
       case Tab.ANALYTICS: return <AnalyticsView />;
+      case Tab.SETTINGS: return <SettingsView />;
       default: return <InventoryView />;
     }
   };

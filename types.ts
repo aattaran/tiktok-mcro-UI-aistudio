@@ -5,6 +5,7 @@ export enum Tab {
     FINANCIALS = 'FINANCIALS',
     FULFILLMENT = 'FULFILLMENT',
     ANALYTICS = 'ANALYTICS',
+    SETTINGS = 'SETTINGS',
   }
   
   export interface Product {
@@ -38,7 +39,11 @@ export enum Tab {
   
   export interface Promotion {
     id: string;
-    date: number; // Day of month
+    date: number; // Keep for backward compat with constants, but UI will use full dates
     title: string;
     type: 'FLASH' | 'COUPON';
+    // New fields for logic
+    startTime?: Date;
+    endTime?: Date;
+    affiliatesNotified?: boolean;
   }

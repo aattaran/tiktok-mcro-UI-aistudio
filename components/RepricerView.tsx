@@ -1,19 +1,18 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Line, ReferenceLine } from 'recharts';
 import { REPRICER_RULES, PRODUCTS } from '../constants';
 import { RepricerRule, Product } from '../types';
 import { 
   Zap, TrendingDown, DollarSign, Moon, ArrowLeft, Save, Search, 
-  BarChart3, Settings2, CheckSquare, Square, Clock, ArrowDownWideNarrow, AlertCircle, CheckCircle2,
-  Swords, Shield, Plus, Target, Flame, Rocket, Pencil
+  BarChart3, Settings2, CheckSquare, Square, Clock, ArrowDownWideNarrow, ArrowUpWideNarrow, AlertCircle, CheckCircle2,
+  Swords, Shield, Plus, Target, Flame, Rocket, Pencil, Trash2, SlidersHorizontal, Activity, TrendingUp, Archive
 } from 'lucide-react';
 
 // --- Types for Simulation ---
 interface SimulationDataPoint {
-  time: string;
+  date: string;
   price: number;
-  competitorPrice: number;
-  volume: number;
+  limitPrice: number; // Represents Floor or Ceiling based on direction
 }
 
 // --- Helpers ---
@@ -70,12 +69,13 @@ export const RepricerView: React.FC = () => {
   // --- Dynamic Configuration State (Detail View) ---
   // "When" Condition
   const [salesThreshold, setSalesThreshold] = useState(5);
-  const [periodDays, setPeriodDays] = useState(7);
+  const [periodDays, setPeriodDays] = useState(14); // Default to 14 days
   
   // "Set Price" Actions
-  const [percentDrop, setPercentDrop] = useState(2.5);
+  const [priceDirection, setPriceDirection] = useState<'DECREASE' | 'INCREASE'>('DECREASE');
+  const [percentChange, setPercentChange] = useState(2.5); // Unified state for Drop/Hike
   const [percentLimit, setPercentLimit] = useState(15.0);
-  const [fixedDrop, setFixedDrop] = useState(0.50);
+  const [fixedChange, setFixedChange] = useState(0.50); // Unified state for Drop/Hike
   const [fixedLimit, setFixedLimit] = useState(5.00);
 
   // Derived Active Rule
@@ -94,108 +94,100 @@ export const RepricerView: React.FC = () => {
   }, [selectedRuleId]);
 
   const assignedProductIds = useMemo(() => 
-    ruleAssignments[selectedRuleId || ''] || new Set(), 
+    ruleAssignments[selectedRuleId || ''] || new Set<string>(), 
   [ruleAssignments, selectedRuleId]);
 
   // --- Real-time Simulation Engine ---
   const simulationResults = useMemo(() => {
     const data: SimulationDataPoint[] = [];
+    const today = new Date();
     
-    // Initial State
-    let myPrice = 100.00;
-    let competitorPrice = 100.50; // Starts slightly higher
-    const costBasis = 65.00; // Fixed cost assumption for margin calc
+    // Initial State 
+    const startPrice = 100.00;
+    let myPrice = startPrice;
+    
+    // Cost basis for global floor calculation (mocked relative to start price)
+    const costBasis = startPrice * 0.65; 
+    
+    // Defines limits
+    let limitPrice = 0;
+    if (priceDirection === 'DECREASE') {
+        const maxStrategyDropAmount = (startPrice * (percentLimit / 100)) + fixedLimit;
+        const strategyFloor = startPrice - maxStrategyDropAmount;
+        const globalFloor = costBasis * (1 + (globalSettings.minProfitMargin / 100));
+        limitPrice = Math.max(strategyFloor, globalFloor);
+    } else {
+        const maxStrategyIncreaseAmount = (startPrice * (percentLimit / 100)) + fixedLimit;
+        const strategyCeiling = startPrice + maxStrategyIncreaseAmount;
+        const globalCeiling = startPrice * 2.0; // Hard cap
+        limitPrice = Math.min(strategyCeiling, globalCeiling);
+    }
 
-    // Accumulators for KPIs
-    let totalWinChance = 0;
-    let totalMargin = 0;
-    let totalVolume = 0;
-    const totalSteps = 24;
+    // Initial Point (Day 0)
+    data.push({
+        date: today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        price: parseFloat(startPrice.toFixed(2)),
+        limitPrice: parseFloat(limitPrice.toFixed(2))
+    });
 
-    // Simulation Loop (24h)
-    for (let i = 0; i < totalSteps; i++) {
-        // 1. Simulate Competitor Moves (Random Walk + Market Trends)
-        const marketNoise = (Math.random() - 0.5) * 2; 
-        const marketTrend = Math.sin(i / 6) * 3; 
-        competitorPrice = 100.50 + marketTrend + marketNoise;
+    // Simulation Loop (Daily Steps)
+    for (let day = 1; day <= periodDays; day++) {
+        const currentSimDate = new Date(today);
+        currentSimDate.setDate(today.getDate() + day);
 
-        // 2. Apply User Strategy (My Price Logic)
-        const dropFactor = (percentDrop / 100);
+        // 1. Calculate Intended Change
+        const pChange = myPrice * (percentChange / 100);
+        const totalChange = pChange + fixedChange;
         
         let targetPrice = myPrice;
+
+        if (priceDirection === 'DECREASE') {
+             // Apply Global Max Daily Drop Constraint
+             const maxAllowedDailyDrop = myPrice * (globalSettings.maxDailyDrop / 100);
+             const actualDrop = Math.min(totalChange, maxAllowedDailyDrop);
              
-        // Logic: If we are losing buy box, trigger the drop rule
-        if (myPrice >= competitorPrice * 0.99) {
-            targetPrice = myPrice * (1 - dropFactor) - fixedDrop;
+             targetPrice = myPrice - actualDrop;
+             // Apply Floor
+             targetPrice = Math.max(limitPrice, targetPrice);
         } else {
-            // Strategy behavior
-            if (activeRule?.type === 'PROFIT') {
-                targetPrice = myPrice * 1.01; 
-            } else if (activeRule?.type === 'VELOCITY') {
-                targetPrice = Math.min(myPrice, competitorPrice - 0.10);
-            }
+             // For Increase, we apply the change directly (could add max daily increase setting later)
+             targetPrice = myPrice + totalChange;
+             // Apply Ceiling
+             targetPrice = Math.min(limitPrice, targetPrice);
         }
 
-        // Apply Limits & Global Guardrails
-        const maxPercentDrop = 100 * (percentLimit / 100);
-        const maxFixedDrop = fixedLimit;
-        // Global Setting: Min Margin Floor
-        const globalMinMarginPrice = costBasis * (1 + (globalSettings.minProfitMargin / 100));
-        
-        const floorPrice = Math.max(100 - maxPercentDrop - maxFixedDrop, globalMinMarginPrice);
-        
-        // Ensure price doesn't go below floor
-        myPrice = Math.max(floorPrice, targetPrice);
-
-
-        // 3. Calculate Win Probability for this step
-        const priceDiffPercent = (competitorPrice - myPrice) / competitorPrice;
-        let stepWinChance = 0;
-        
-        if (priceDiffPercent > 0.03) stepWinChance = 95; 
-        else if (priceDiffPercent > 0) stepWinChance = 60 + (priceDiffPercent * 1000); 
-        else if (priceDiffPercent > -0.02) stepWinChance = 20; 
-        else stepWinChance = 0; 
-
-        // 4. Calculate Margin %
-        const currentMargin = ((myPrice - costBasis) / myPrice) * 100;
-
-        // 5. Calculate Volume
-        const baseVolume = 10;
-        const volume = Math.floor(baseVolume * (stepWinChance / 100) * 1.5) + Math.random() * 2;
-
-        // Accumulate
-        totalWinChance += stepWinChance;
-        totalMargin += currentMargin;
-        totalVolume += volume;
+        myPrice = targetPrice;
 
         data.push({
-            time: `${i}:00`,
+            date: currentSimDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
             price: parseFloat(myPrice.toFixed(2)),
-            competitorPrice: parseFloat(competitorPrice.toFixed(2)),
-            volume: volume
+            limitPrice: parseFloat(limitPrice.toFixed(2)),
         });
     }
 
-    // Averages
-    const avgWinRate = Math.min(100, Math.floor(totalWinChance / totalSteps));
-    const avgMargin = (totalMargin / totalSteps).toFixed(1);
-    const winRateChange = (avgWinRate - 25).toFixed(0); 
+    // KPIs based on final state
+    const finalPrice = data[data.length - 1].price;
+    const priceDiff = finalPrice - startPrice;
+    const diffPercentage = ((priceDiff / startPrice) * 100).toFixed(1);
+    
+    // Avg Margin at the final price point
+    const finalMargin = ((finalPrice - costBasis) / finalPrice) * 100;
 
     return {
         chartData: data,
-        avgWinRate,
-        avgMargin,
-        winRateChange
+        diffPercentage,
+        finalMargin: finalMargin.toFixed(1),
+        finalPrice: finalPrice.toFixed(2),
+        isGain: priceDiff >= 0
     };
-  }, [percentDrop, fixedDrop, percentLimit, fixedLimit, activeRule, globalSettings]);
+  }, [priceDirection, percentChange, fixedChange, percentLimit, fixedLimit, globalSettings, periodDays]);
 
-  const { chartData, avgWinRate, avgMargin, winRateChange } = simulationResults;
+  const { chartData, diffPercentage, finalMargin, finalPrice, isGain } = simulationResults;
 
   // --- Handlers ---
   const toggleProduct = (productId: string) => {
     if (!selectedRuleId) return;
-    const newSet = new Set(assignedProductIds);
+    const newSet = new Set<string>(assignedProductIds);
     if (newSet.has(productId)) newSet.delete(productId);
     else newSet.add(productId);
     setRuleAssignments(prev => ({ ...prev, [selectedRuleId]: newSet }));
@@ -204,7 +196,7 @@ export const RepricerView: React.FC = () => {
   const handleSelectAll = () => {
     if (!selectedRuleId) return;
     const allIds = PRODUCTS.map(p => p.id);
-    const newSet = new Set(assignedProductIds.size === allIds.length ? [] : allIds);
+    const newSet = new Set<string>(assignedProductIds.size === allIds.length ? [] : allIds);
     setRuleAssignments(prev => ({ ...prev, [selectedRuleId]: newSet }));
   };
 
@@ -218,7 +210,7 @@ export const RepricerView: React.FC = () => {
           description: newStrategy.description || 'Custom strategy configuration.'
       };
       setRules([...rules, newRule]);
-      setRuleAssignments(prev => ({ ...prev, [id]: new Set() }));
+      setRuleAssignments(prev => ({ ...prev, [id]: new Set<string>() }));
       
       // Reset and Navigate
       setNewStrategy({ name: '', type: 'PROFIT', description: '' });
@@ -231,6 +223,13 @@ export const RepricerView: React.FC = () => {
       setRules(prev => prev.map(r => 
           r.id === ruleId ? { ...r, active: !r.active } : r
       ));
+  };
+
+  const handleDeleteRule = (e: React.MouseEvent, ruleId: string) => {
+      e.stopPropagation();
+      if (window.confirm('Are you sure you want to delete this strategy?')) {
+          setRules(prev => prev.filter(r => r.id !== ruleId));
+      }
   };
 
   const handleRename = () => {
@@ -431,6 +430,8 @@ export const RepricerView: React.FC = () => {
   const renderDetailView = () => {
      if (!activeRule) return null;
      const themeColor = getColor(activeRule.type);
+     const DirectionIcon = priceDirection === 'DECREASE' ? ArrowDownWideNarrow : ArrowUpWideNarrow;
+     const directionColor = priceDirection === 'DECREASE' ? 'text-orange-400' : 'text-emerald-400';
     
     return (
       <div className="h-full flex flex-col gap-6 animate-[fadeIn_0.3s_ease-out]">
@@ -484,54 +485,48 @@ export const RepricerView: React.FC = () => {
               <p className="text-zinc-500 text-xs mt-1">{activeRule.description}</p>
             </div>
           </div>
-          <button 
-            className="flex items-center gap-2 px-4 py-2 bg-neon-cyan/10 hover:bg-neon-cyan/20 border border-neon-cyan/50 text-neon-cyan rounded-lg transition-all"
-            onClick={() => setSelectedRuleId(null)}
-          >
-            <Save className="w-4 h-4" />
-            Save Configuration
-          </button>
         </div>
 
-        {/* Content Layout */}
-        <div className="flex-1 flex flex-col lg:flex-row gap-6 min-h-0">
+        {/* Content Layout - Reversed Column for Mobile Stacking Order (Scope -> Logic) */}
+        <div className="flex-1 flex flex-col-reverse lg:flex-row gap-6 min-h-0">
           
-          {/* Left Column: Configuration & Simulation */}
-          <div className="w-full lg:w-5/12 flex flex-col gap-6 overflow-y-auto pr-2">
+          {/* Left Column (Logic) - Becomes Bottom on Mobile */}
+          <div className="w-full lg:w-5/12 flex flex-col gap-6 overflow-y-auto pr-1 lg:pr-2 pb-4">
             
             {/* KPI Simulation Cards */}
             <div className="grid grid-cols-2 gap-3">
                 <div className="glass-panel p-4 rounded-xl relative overflow-hidden group">
                     <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold flex items-center gap-2">
-                        Proj. Win Rate
-                        <span className="p-0.5 rounded bg-zinc-800 text-zinc-400 cursor-help" title="Probability of winning the Buy Box based on price vs competitor">
-                            <AlertCircle className="w-3 h-3" />
+                        {isGain ? 'Potential Gain' : 'Potential Drop'}
+                        <span className="p-0.5 rounded bg-zinc-800 text-zinc-400 cursor-help" title="Projected price movement based on strategy">
+                            <Activity className="w-3 h-3" />
                         </span>
                     </div>
                     <div className="text-2xl font-bold text-white flex items-baseline gap-2">
-                        {avgWinRate}% 
-                        <span className={`${Number(winRateChange) >= 0 ? 'text-emerald-500' : 'text-red-500'} text-xs font-medium`}>
-                             {Number(winRateChange) > 0 ? '+' : ''}{winRateChange}%
-                        </span>
+                        {isGain ? '+' : ''}{diffPercentage}%
+                        <span className="text-zinc-500 text-xs font-medium">total</span>
                     </div>
-                    <div className="absolute right-0 bottom-0 opacity-[0.03] group-hover:opacity-10 transition-opacity">
-                        <Swords className="w-16 h-16" />
+                    <div className="text-[10px] text-zinc-400 mt-1">
+                        Final Price: <span className="text-white font-mono">${finalPrice}</span>
                     </div>
                     <div className="h-1 w-full bg-zinc-800 rounded-full mt-3 overflow-hidden">
-                        <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${avgWinRate}%` }} />
+                        <div 
+                            className={`h-full transition-all duration-500 ${isGain ? 'bg-emerald-500' : 'bg-red-500'}`} 
+                            style={{ width: `${Math.min(100, Math.abs(Number(diffPercentage)) * 3)}%` }} 
+                        />
                     </div>
                 </div>
                 <div className="glass-panel p-4 rounded-xl relative overflow-hidden group">
-                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Avg. Margin</div>
+                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1 font-semibold">Proj. Margin</div>
                     <div className="text-2xl font-bold text-white flex items-baseline gap-2">
-                        {avgMargin}% 
-                        <span className="text-zinc-500 text-xs font-medium">real-time</span>
+                        {finalMargin}% 
+                        <span className="text-zinc-500 text-xs font-medium">at target</span>
                     </div>
                     <div className="absolute right-0 bottom-0 opacity-[0.03] group-hover:opacity-10 transition-opacity">
                         <DollarSign className="w-16 h-16" />
                     </div>
                      <div className="h-1 w-full bg-zinc-800 rounded-full mt-3 overflow-hidden">
-                        <div className="h-full bg-neon-pink transition-all duration-500" style={{ width: `${Math.min(100, parseFloat(avgMargin) * 2)}%` }} />
+                        <div className="h-full bg-neon-pink transition-all duration-500" style={{ width: `${Math.min(100, parseFloat(finalMargin) * 2)}%` }} />
                     </div>
                 </div>
             </div>
@@ -573,28 +568,50 @@ export const RepricerView: React.FC = () => {
 
                 {/* Section 2: Pricing Actions */}
                 <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-white font-medium">
-                        <ArrowDownWideNarrow className="w-4 h-4 text-zinc-400" />
-                        Pricing Actions
-                        <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded text-zinc-400 font-normal ml-auto">THEN</span>
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-white font-medium">
+                            <DirectionIcon className={`w-4 h-4 ${directionColor}`} />
+                            Pricing Actions
+                            <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded text-zinc-400 font-normal ml-auto">THEN</span>
+                        </div>
+                        
+                        {/* Direction Toggle */}
+                        <div className="flex bg-black/30 rounded-lg p-1 border border-white/5">
+                            <button 
+                                onClick={() => setPriceDirection('DECREASE')}
+                                className={`px-2 py-1 rounded text-[10px] font-bold transition-all flex items-center gap-1 ${priceDirection === 'DECREASE' ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                            >
+                                <ArrowDownWideNarrow className="w-3 h-3" /> Drop
+                            </button>
+                            <button 
+                                onClick={() => setPriceDirection('INCREASE')}
+                                className={`px-2 py-1 rounded text-[10px] font-bold transition-all flex items-center gap-1 ${priceDirection === 'INCREASE' ? 'bg-zinc-700 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'}`}
+                            >
+                                <ArrowUpWideNarrow className="w-3 h-3" /> Hike
+                            </button>
+                        </div>
                     </div>
                     
                     <div className="p-4 bg-black/20 rounded-xl border border-white/5 space-y-5">
                         {/* Percentage Rule */}
                         <div className="space-y-2">
                              <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300">
-                                <span>Decrease price by</span>
+                                <span>{priceDirection === 'DECREASE' ? 'Decrease' : 'Increase'} price by</span>
                                 <div className="relative">
                                     <input 
                                         type="number" 
                                         step="0.1"
-                                        value={percentDrop}
-                                        onChange={(e) => setPercentDrop(Number(e.target.value))}
+                                        value={percentChange}
+                                        onChange={(e) => setPercentChange(Number(e.target.value))}
                                         className="w-20 bg-zinc-900 border border-white/10 rounded-lg pl-3 pr-6 py-1 text-white focus:border-neon-cyan focus:outline-none"
                                     />
                                     <span className="absolute right-2 top-1.5 text-xs text-zinc-500">%</span>
                                 </div>
-                                <span>down to a limit of</span>
+                                <span className="text-zinc-500 italic text-xs">(optional)</span>
+                            </div>
+                            
+                            <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300 mt-2">
+                                <span>{priceDirection === 'DECREASE' ? 'Down to a limit of' : 'Up to a limit of'}</span>
                                 <div className="relative">
                                     <input 
                                         type="number" 
@@ -605,14 +622,8 @@ export const RepricerView: React.FC = () => {
                                     />
                                     <span className="absolute right-2 top-1.5 text-xs text-zinc-500">%</span>
                                 </div>
+                                <span className="text-xs text-zinc-500">of start price</span>
                             </div>
-                            <input 
-                                type="range" 
-                                min="0" max="10" step="0.1" 
-                                value={percentDrop}
-                                onChange={(e) => setPercentDrop(Number(e.target.value))}
-                                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-cyan" 
-                            />
                         </div>
 
                         {/* Divider */}
@@ -625,18 +636,21 @@ export const RepricerView: React.FC = () => {
                         {/* Fixed Value Rule */}
                         <div className="space-y-2">
                             <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300">
-                                <span>Decrease price by</span>
+                                <span>{priceDirection === 'DECREASE' ? 'Decrease' : 'Increase'} price by</span>
                                 <div className="relative">
                                     <span className="absolute left-2 top-1.5 text-xs text-zinc-500">$</span>
                                     <input 
                                         type="number" 
                                         step="0.01"
-                                        value={fixedDrop}
-                                        onChange={(e) => setFixedDrop(Number(e.target.value))}
+                                        value={fixedChange}
+                                        onChange={(e) => setFixedChange(Number(e.target.value))}
                                         className="w-20 bg-zinc-900 border border-white/10 rounded-lg pl-5 pr-2 py-1 text-white focus:border-neon-cyan focus:outline-none"
                                     />
                                 </div>
-                                <span>up to a limit of</span>
+                                <span className="text-zinc-500 italic text-xs">(optional)</span>
+                            </div>
+                             <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-300 mt-2">
+                                <span>{priceDirection === 'DECREASE' ? 'Down to a limit of' : 'Up to a limit of'}</span>
                                 <div className="relative">
                                     <span className="absolute left-2 top-1.5 text-xs text-zinc-500">$</span>
                                     <input 
@@ -648,13 +662,6 @@ export const RepricerView: React.FC = () => {
                                     />
                                 </div>
                             </div>
-                            <input 
-                                type="range" 
-                                min="0" max="5" step="0.1" 
-                                value={fixedDrop}
-                                onChange={(e) => setFixedDrop(Number(e.target.value))}
-                                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-neon-pink" 
-                            />
                         </div>
                     </div>
                 </div>
@@ -663,22 +670,19 @@ export const RepricerView: React.FC = () => {
             {/* Simulation Chart */}
             <div className="glass-panel p-6 rounded-2xl flex-1 min-h-[250px] flex flex-col">
                 <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-sm font-medium text-white">Projected Performance vs Competitor</h3>
+                    <h3 className="text-sm font-medium text-white">Projected Price Trajectory</h3>
                     <div className="flex gap-4">
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
                             <div className="w-2 h-2 rounded-full" style={{ background: themeColor }}></div>
-                            My Price
-                        </div>
-                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
-                            <div className="w-3 h-1 rounded-full bg-yellow-500/50 border border-dashed border-yellow-500"></div>
-                            Competitor
+                            Projected
                         </div>
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
-                            <div className="w-2 h-2 rounded-full bg-zinc-600"></div>
-                            Volume
+                            <div className="w-2 h-2 rounded-full bg-red-500/50"></div>
+                            {isGain ? 'Max Ceiling' : 'Min Floor'}
                         </div>
                     </div>
                 </div>
+                
                 <div className="flex-1 w-full -ml-4">
                     <ResponsiveContainer width="100%" height="100%">
                         <AreaChart data={chartData}>
@@ -689,21 +693,38 @@ export const RepricerView: React.FC = () => {
                             </linearGradient>
                         </defs>
                         <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                        <XAxis dataKey="time" hide />
-                        <YAxis hide domain={['dataMin - 5', 'dataMax + 5']} />
+                        <XAxis 
+                            dataKey="date" 
+                            stroke="#52525b" 
+                            fontSize={11} 
+                            tickLine={false} 
+                            axisLine={false}
+                            interval={Math.floor(chartData.length / 5)}
+                        />
+                        <YAxis 
+                            stroke="#52525b" 
+                            fontSize={11} 
+                            tickLine={false} 
+                            axisLine={false}
+                            tickFormatter={(value) => `$${value}`}
+                            domain={['auto', 'auto']}
+                            padding={{ top: 20, bottom: 20 }}
+                        />
                         <Tooltip 
                             contentStyle={{ backgroundColor: '#0F1115', border: '1px solid #ffffff10', borderRadius: '8px' }}
                             itemStyle={{ fontSize: '12px' }}
+                            formatter={(value: number) => [`$${value}`, 'Price']}
                         />
-                        {/* Competitor Line */}
+                        {/* Limit Line (Floor/Ceiling) */}
                         <Area
-                            type="monotone"
-                            dataKey="competitorPrice"
-                            stroke="#eab308"
-                            strokeWidth={2}
-                            strokeDasharray="5 5"
+                            type="step"
+                            dataKey="limitPrice"
+                            stroke={isGain ? '#10b981' : '#ef4444'}
+                            strokeWidth={1}
+                            strokeDasharray="4 4"
                             fill="transparent"
                             isAnimationActive={false}
+                            name={isGain ? 'Ceiling' : 'Floor'}
                         />
                         {/* My Price */}
                         <Area 
@@ -715,24 +736,34 @@ export const RepricerView: React.FC = () => {
                             fill="url(#colorPrice)" 
                             animationDuration={300}
                         />
-                        {/* Volume Bar (represented as step line) */}
-                         <Area 
-                            type="step" 
-                            dataKey="volume" 
-                            stroke="#52525b" 
-                            strokeWidth={1}
-                            strokeDasharray="2 2"
-                            fill="transparent" 
-                            animationDuration={300}
-                        />
                         </AreaChart>
                     </ResponsiveContainer>
                 </div>
             </div>
+
+            {/* Action Footer (Sticky) */}
+            <div className="sticky bottom-0 pt-4 pb-2 z-20">
+                <div className="glass-panel p-3 rounded-xl flex gap-3 bg-[#0F1115]/90 backdrop-blur-xl border border-white/10 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]">
+                    <button 
+                        onClick={() => setSelectedRuleId(null)}
+                        className="flex-1 py-3 rounded-lg border border-zinc-700 text-zinc-400 font-medium hover:text-white hover:bg-white/5 transition-all flex items-center justify-center gap-2 group"
+                    >
+                        <Archive className="w-4 h-4 text-zinc-500 group-hover:text-white transition-colors" />
+                        Save Draft
+                    </button>
+                    <button 
+                        onClick={() => setSelectedRuleId(null)}
+                        className="flex-1 py-3 rounded-lg bg-gradient-to-r from-neon-cyan to-blue-600 text-black font-bold shadow-[0_0_20px_rgba(0,242,234,0.2)] hover:shadow-[0_0_30px_rgba(0,242,234,0.4)] hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
+                    >
+                        <Rocket className="w-4 h-4" />
+                        Deploy Strategy
+                    </button>
+                </div>
+            </div>
           </div>
 
-          {/* Right Column: Scope Selector */}
-          <div className="flex-1 glass-panel rounded-2xl flex flex-col overflow-hidden">
+          {/* Right Column (Scope) - Becomes Top on Mobile */}
+          <div className="h-80 lg:h-auto flex-none lg:flex-1 glass-panel rounded-2xl flex flex-col overflow-hidden shrink-0">
             <div className="p-6 border-b border-white/5 flex flex-col gap-4">
                 <div className="flex items-center justify-between">
                     <div>
@@ -868,12 +899,20 @@ export const RepricerView: React.FC = () => {
                 <div className="p-3 bg-white/5 rounded-xl border border-white/5 group-hover:scale-110 transition-transform duration-300">
                     {getIcon(rule.type)}
                 </div>
-                 <button
-                    onClick={(e) => toggleRuleActive(e, rule.id)}
-                    className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 focus:outline-none ${rule.active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
-                >
-                    <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-300 ${rule.active ? 'translate-x-6' : 'translate-x-0'}`} />
-                </button>
+                 <div className="flex items-center gap-2">
+                    <button
+                        onClick={(e) => toggleRuleActive(e, rule.id)}
+                        className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 focus:outline-none ${rule.active ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                    >
+                        <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-300 ${rule.active ? 'translate-x-6' : 'translate-x-0'}`} />
+                    </button>
+                    <button
+                        onClick={(e) => handleDeleteRule(e, rule.id)}
+                        className="p-1.5 rounded-lg hover:bg-red-500/10 text-zinc-500 hover:text-red-500 transition-colors"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                    </button>
+                 </div>
                 </div>
                 
                 <h3 className="text-lg font-medium text-white mb-2 group-hover:text-neon-cyan transition-colors relative z-10">
